@@ -1876,13 +1876,13 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
         view_algorithm view_or_trigger_or_sp_or_event
         definer_tail no_definer_tail
         view_suid view_tail view_list_opt view_list view_select
-        view_check_option trigger_tail sp_tail sf_tail event_tail
+        view_check_option trigger_tail sp_tail sf_tail event_tail sf_tail2
         udf_tail udf_tail2
         install uninstall partition_entry binlog_base64_event
         normal_key_options normal_key_opts all_key_opt 
         spatial_key_options fulltext_key_options normal_key_opt 
         fulltext_key_opt spatial_key_opt fulltext_key_opts spatial_key_opts
-	keep_gcc_happy
+        keep_gcc_happy
         key_using_alg
         part_column_list
         server_def server_options_list server_option
@@ -3905,6 +3905,7 @@ sp_proc_stmt_fetch_head:
 
 sp_proc_stmt_fetch:
           sp_proc_stmt_fetch_head sp_fetch_list { }
+          | FETCH_SYM GROUP_SYM NEXT_SYM ROW_SYM {}
         ;
 
 sp_proc_stmt_close:
@@ -16565,9 +16566,13 @@ udf_tail2:
             lex->udf.dl= $7.str;
           }
         ;
-
 sf_tail:
-          FUNCTION_SYM /* $1 */
+          AGGREGATE_SYM sf_tail2 {  }
+        | sf_tail2               {  }
+        ;
+
+sf_tail2:
+          FUNCTION_SYM/* $1 */
           opt_if_not_exists /* $2 */
           sp_name /* $3 */
           { /* $4 */
