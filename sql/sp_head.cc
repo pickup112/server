@@ -553,8 +553,9 @@ sp_head::sp_head()
   m_first_instance= this;
   m_first_free_instance= this;
   m_last_cached_sp= this;
-
+  m_rcont = NULL;
   m_return_field_def.charset = NULL;
+
   /*
     FIXME: the only use case when name is NULL is events, and it should
     be rewritten soon. Remove the else part and replace 'if' with
@@ -1025,7 +1026,6 @@ void sp_head::recursion_level_error(THD *thd)
 bool
 sp_head::execute(THD *thd, bool merge_da_on_success)
 {
- // printf("varun\n");
   DBUG_ENTER("sp_head::execute");
   char saved_cur_db_name_buf[SAFE_NAME_LEN+1];
   LEX_STRING saved_cur_db_name=
@@ -1657,19 +1657,22 @@ bool
 sp_head::execute_function(THD *thd, Item **argp, uint argcount,
                           Field *return_value_fld)
 {
+  int i=0;
   ulonglong UNINIT_VAR(binlog_save_options);
   bool need_binlog_call= FALSE;
   uint arg_no;
   sp_rcontext *octx = thd->spcont;
-  sp_rcontext *nctx = NULL;
+  sp_rcontext *nctx = m_rcont;
   char buf[STRING_BUFFER_USUAL_SIZE];
   String binlog_buf(buf, sizeof(buf), &my_charset_bin);
   bool err_status= FALSE;
-  MEM_ROOT call_mem_root;
-  Query_arena call_arena(&call_mem_root, Query_arena::STMT_INITIALIZED_FOR_SP);
+  Query_arena call_arena(&callee_mem_root, Query_arena::STMT_INITIALIZED_FOR_SP);
+  if(!nctx)
+  init_sql_alloc(&callee_mem_root, MEM_ROOT_BLOCK_SIZE, 0, MYF(0));
   Query_arena backup_arena;
   DBUG_ENTER("sp_head::execute_function");
   DBUG_PRINT("info", ("function %s", m_name.str));
+  //init_sql_alloc(&call_mem_root, MEM_ROOT_BLOCK_SIZE, 0, MYF(0));
 
   /*
     Check that the function is called with all specified arguments.
@@ -1699,7 +1702,7 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
     TODO: we should create sp_rcontext once per command and reuse
     it on subsequent executions of a function/trigger.
   */
-  init_sql_alloc(&call_mem_root, MEM_ROOT_BLOCK_SIZE, 0, MYF(0));
+
   thd->set_n_backup_active_arena(&call_arena, &backup_arena);
 
   if (!(nctx= rcontext_create(thd, false, return_value_fld)))
@@ -1722,6 +1725,7 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
 #endif
 
   /* Pass arguments. */
+  
   for (arg_no= 0; arg_no < argcount; arg_no++)
   {
     /* Arguments must be fixed in Item_func_sp::fix_fields */
@@ -1730,6 +1734,19 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
     if ((err_status= nctx->set_variable(thd, arg_no, &(argp[arg_no]))))
       goto err_with_cleanup;
   }
+  /*}
+  else
+  {
+   for (arg_no= 0; arg_no < argcount; arg_no++)
+   {
+   
+    DBUG_ASSERT(argp[arg_no]->fixed);
+
+    if ((err_status= nctx->set_variable(thd, (arg_no+1)%2, &(argp[arg_no]))))
+      goto err_with_cleanup;
+   }
+
+  }*/
 
   /*
     If row-based binlogging, we don't need to binlog the function's call, let
@@ -1796,6 +1813,7 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
       as one select and not resetting THD::user_var_events before
       each invocation.
     */
+    
     q= get_query_id();
     mysql_bin_log.start_union_events(thd, q + 1);
     binlog_save_options= thd->variables.option_bits;
@@ -1813,6 +1831,7 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
   thd->set_n_backup_active_arena(&call_arena, &backup_arena);
 
   err_status= execute(thd, TRUE);
+  
 
   thd->restore_active_arena(&call_arena, &backup_arena);
 
@@ -1855,11 +1874,12 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
   m_security_ctx.restore_security_context(thd, save_security_ctx);
 #endif
 
+
 err_with_cleanup:
-  //printf("context not deleted");
-  delete nctx;
-  call_arena.free_items();
-  free_root(&call_mem_root, MYF(0));
+  //delete nctx;
+  //call_arena.free_items();
+  //free_root(&call_mem_root, MYF(0));
+  m_rcont = nctx;
   thd->spcont= octx;
 
   /*
