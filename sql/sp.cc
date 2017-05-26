@@ -509,45 +509,47 @@ db_find_routine_aux(THD *thd, stored_procedure_type type, const sp_name *name,
 }
 
 bool
-db_get_aggregate_value(THD *thd, stored_procedure_type type, sp_name *name, st_sp_chistics *chistics)
+db_get_aggregate_value(THD *thd, stored_procedure_type type, const sp_name *name,
+                       st_sp_chistics *chistics)
 {
   TABLE *table;
-  bool ret= false;
+  int ret;
   char *ptr;
   bool saved_time_zone_used= thd->time_zone_used;
-  ulonglong saved_mode= thd->variables.sql_mode;
+  sql_mode_t saved_mode= thd->variables.sql_mode;
   Open_tables_backup open_tables_state_backup;
   sp_head *sp;
 
-  DBUG_ENTER("db_get_aggregate_value");
+  DBUG_ENTER("db_find_routine");
   DBUG_PRINT("enter", ("type: %d name: %.*s",
            type, (int) name->m_name.length, name->m_name.str));
 
-  if(sp= sp_cache_lookup(&thd->sp_func_cache,name))
+  if ((sp= sp_cache_lookup(&thd->sp_func_cache,name)))
   {
     chistics->agg_type= sp->m_chistics->agg_type;
-    DBUG_RETURN(FALSE);
+    DBUG_RETURN(SP_OK);
   }
-                                     // In case of errors
-  if (!(table= open_proc_table_for_read(thd, &open_tables_state_backup)))
-    DBUG_RETURN(true);
 
-  if (db_find_routine_aux(thd, type, name, table) != SP_OK)
-  {
-    ret= true;
+                                      // In case of errors
+  if (!(table= open_proc_table_for_read(thd, &open_tables_state_backup)))
+    DBUG_RETURN(SP_OPEN_TABLE_FAILED);
+
+  /* Reset sql_mode during data dictionary operations. */
+  thd->variables.sql_mode= 0;
+
+  if ((ret= db_find_routine_aux(thd, type, name, table)) != SP_OK)
     goto done;
-  }
 
   if (table->s->fields < MYSQL_PROC_FIELD_COUNT)
   {
-    ret= true;
+    ret= SP_GET_FIELD_FAILED;
     goto done;
   }
 
   if ((ptr= get_field(thd->mem_root,
           table->field[MYSQL_PROC_FIELD_AGGREGATE])) == NULL)
   {
-    ret= true;
+    ret= SP_GET_FIELD_FAILED;
     goto done;
   }
   switch (ptr[0]) {
@@ -564,6 +566,9 @@ db_get_aggregate_value(THD *thd, stored_procedure_type type, sp_name *name, st_s
     chistics->agg_type= DEFAULT_AGGREGATE;
   }
 
+  close_system_tables(thd, &open_tables_state_backup);
+  table= 0;
+
  done:
   /*
     Restore the time zone flag as the timezone usage in proc table
@@ -574,6 +579,7 @@ db_get_aggregate_value(THD *thd, stored_procedure_type type, sp_name *name, st_s
     close_system_tables(thd, &open_tables_state_backup);
   thd->variables.sql_mode= saved_mode;
   DBUG_RETURN(ret);
+
 }
 
 
@@ -1238,7 +1244,7 @@ sp_create_routine(THD *thd, stored_procedure_type type, sp_head *sp)
       table->field[MYSQL_PROC_FIELD_NAME]->
         store(sp->m_name.str, sp->m_name.length, system_charset_info);
 
-    if(sp->m_chistics->agg_type != DEFAULT_AGGREGATE)
+    if (sp->m_chistics->agg_type != DEFAULT_AGGREGATE)
     store_failed= store_failed ||
       table->field[MYSQL_PROC_FIELD_AGGREGATE]->
         store((longlong)sp->m_chistics->agg_type,TRUE);
@@ -1549,9 +1555,9 @@ sp_update_routine(THD *thd, stored_procedure_type type, const sp_name *name,
       table->field[MYSQL_PROC_FIELD_COMMENT]->store(chistics->comment.str,
 						    chistics->comment.length,
 						    system_charset_info);
-    if(chistics->agg_type != DEFAULT_AGGREGATE)
-    table->field[MYSQL_PROC_FIELD_AGGREGATE]->
-        store((longlong)chistics->agg_type, TRUE);
+    if (chistics->agg_type != DEFAULT_AGGREGATE)
+      table->field[MYSQL_PROC_FIELD_AGGREGATE]->
+                store((longlong)chistics->agg_type, TRUE);
     if ((ret= table->file->ha_update_row(table->record[1],table->record[0])) &&
         ret != HA_ERR_RECORD_IS_THE_SAME)
       ret= SP_WRITE_ROW_FAILED;
@@ -2309,11 +2315,10 @@ show_create_sp(THD *thd, String *buf,
 {
   sql_mode_t old_sql_mode= thd->variables.sql_mode;
   ulong agglen= (chistics->agg_type == GROUP_AGGREGATE)? 10 : 0;
-
   /* Make some room to begin with */
   if (buf->alloc(100 + dblen + 1 + namelen + paramslen + returnslen + bodylen +
-		 chistics->comment.length + 10 /* length of " DEFINER= "*/ + agglen +
-                      USER_HOST_BUFF_SIZE))
+	    chistics->comment.length + 10 /* length of " DEFINER= "*/ + agglen +
+      USER_HOST_BUFF_SIZE))
     return FALSE;
 
   thd->variables.sql_mode= sql_mode;
